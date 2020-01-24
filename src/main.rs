@@ -1,5 +1,8 @@
 #![feature(test, generators, generator_trait)]
 
+#[cfg(test)]
+#[macro_use] extern crate quickcheck;
+
 use std::mem;
 use std::cmp::Ordering::{Less, Equal, Greater};
 use std::ops::{Generator, GeneratorState};
@@ -136,6 +139,27 @@ fn main() {
 mod tests {
     extern crate test;
     use super::*;
+
+    quickcheck! {
+        fn qc_easy(xs: Vec<i32>, x: i32) -> bool {
+            let mut xs = xs;
+
+            xs.sort_unstable();
+            xs.dedup();
+
+            let a = xs.binary_search(&x);
+
+            let mut generator = BinarySearch::new(&xs, x);
+            let b = loop {
+                match Pin::new(&mut generator).resume() {
+                    GeneratorState::Yielded(_) => (),
+                    GeneratorState::Complete(result) => break result,
+                }
+            };
+
+            a == b
+        }
+    }
 
     #[bench]
     fn name(b: &mut test::Bencher) {
