@@ -1,0 +1,7 @@
+[package]
+name = "coroutines-mem-lookups"
+version = "0.1.0"
+authors = ["Clément Renault <renault.cle@gmail.com>"]
+edition = "2018"
+
+[dependencies]
