@@ -3,6 +3,7 @@
 #[cfg(test)]
 #[macro_use] extern crate quickcheck;
 
+use std::ops::{Generator, GeneratorState};
 use std::str::FromStr;
 use std::cmp::Ordering::{Less, Equal, Greater};
 use std::arch::x86_64::{_mm_prefetch, _MM_HINT_NTA};
@@ -105,12 +106,55 @@ fn run_future<F: Future>(mut fut: F) -> F::Output {
     }
 }
 
-fn main() {
-    let slice: Vec<_> = (0..10_000_000).collect();
-    let value = std::env::args().nth(1).and_then(|s| i32::from_str(&s).ok()).unwrap_or(10_000);
+fn binary_search_gen(s: &[i32], value: i32) -> impl Generator<Yield=(), Return=Result<usize, usize>> + '_ {
+    move || {
+        let mut size = s.len();
+        if size == 0 {
+            return Err(0);
+        }
+        let mut base = 0usize;
+        while size > 1 {
+            let half = size / 2;
+            let mid = base + half;
+            // mid is always in [0, size), that means mid is >= 0 and < size.
+            // mid >= 0: by definition
+            // mid < size: mid = size / 2 + size / 4 + size / 8 ...
+            let reference = unsafe { s.get_unchecked(mid) };
+            let pointer: *const _ = &*reference;
+            yield unsafe { _mm_prefetch(pointer as _, _MM_HINT_NTA) };
+            let cmp = (*reference).cmp(&value);
+            base = if cmp == Greater { base } else { mid };
+            size -= half;
+        }
+        // base is always in [0, size) because base <= mid.
+        let reference = unsafe { s.get_unchecked(base) };
+        let pointer: *const _ = &*reference;
+        yield unsafe { _mm_prefetch(pointer as _, _MM_HINT_NTA) };
+        let cmp = (*reference).cmp(&value);
+        if cmp == Equal { Ok(base) } else { Err(base + (cmp == Less) as usize) }
+    }
+}
 
-    let res = run_future(binary_search(&slice, value));
+fn main() {
+    let vec: Vec<_> = (0..10_000_000).collect();
+    let value = std::env::args().nth(1).and_then(|s| i32::from_str(&s).ok()).unwrap_or(10_000);
+    let res = run_future(binary_search(&vec, value));
     println!("{:?}", res);
+
+    let bsa = binary_search_gen(vec.as_slice(), value);
+    let bsb = binary_search_gen(vec.as_slice(), value);
+    let bss = vec![bsa, bsb];
+
+    for mut bs in bss {
+        let res = loop {
+            match Pin::new(&mut bs).resume() {
+                GeneratorState::Yielded(_) => (),
+                GeneratorState::Complete(result) => break result,
+            }
+        };
+        println!("{:?}", res);
+    }
+
 }
 
 #[cfg(test)]
