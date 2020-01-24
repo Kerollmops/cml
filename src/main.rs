@@ -3,141 +3,121 @@
 #[cfg(test)]
 #[macro_use] extern crate quickcheck;
 
-use std::mem;
+use std::str::FromStr;
 use std::cmp::Ordering::{Less, Equal, Greater};
-use std::ops::{Generator, GeneratorState};
 use std::arch::x86_64::{_mm_prefetch, _MM_HINT_NTA};
 use std::pin::Pin;
 
-enum BinarySearch<'a> {
-    Start {
-        slice: &'a [i32],
-        value: i32,
-    },
-    Explore {
-        slice: &'a [i32],
-        size: usize,
-        value: i32,
-        base: usize,
-        half: usize,
-        mid: usize,
-    },
-    Final {
-        slice: &'a [i32],
-        value: i32,
-        base: usize,
-    },
-    Done,
+use std::future::Future;
+use std::task::{Context, Poll};
+
+struct FuturePrefetch<'a> {
+    fetched: bool,
+    reference: &'a i32,
 }
 
-impl<'a> BinarySearch<'a> {
-    fn new(slice: &'a [i32], value: i32) -> BinarySearch<'a> {
-        BinarySearch::Start { slice, value }
+impl FuturePrefetch<'_> {
+    fn new(reference: &i32) -> FuturePrefetch {
+        FuturePrefetch { fetched: false, reference }
     }
 }
 
-impl Generator for BinarySearch<'_> {
-    type Yield = ();
-    type Return = Result<usize, usize>;
+impl Future for FuturePrefetch<'_> {
+    type Output = i32;
 
-    fn resume(mut self: Pin<&mut Self>) -> GeneratorState<(), Self::Return> {
-        match mem::replace(&mut *self, BinarySearch::Done) {
-            BinarySearch::Start { slice, value } => {
-                let size = slice.len();
-
-                if size == 0 {
-                    *self = BinarySearch::Done;
-                    return GeneratorState::Complete(Err(0));
-                }
-
-                let base = 0usize;
-                if size > 1 {
-                    let half = size / 2;
-                    let mid = base + half;
-
-                    // mid is always in [0, size), that means mid is >= 0 and < size.
-                    // mid >= 0: by definition
-                    // mid < size: mid = size / 2 + size / 4 + size / 8 ...
-                    unsafe { _mm_prefetch(mid as _, _MM_HINT_NTA) }
-
-                    *self = BinarySearch::Explore { slice, size, value, base, half, mid };
-                    GeneratorState::Yielded(())
-                } else {
-
-                    // base is always in [0, size) because base <= mid.
-                    unsafe { _mm_prefetch(base as _, _MM_HINT_NTA) };
-
-                    *self = BinarySearch::Final { slice, value, base };
-                    GeneratorState::Yielded(())
-                }
-            }
-
-            // This state is always called after we triggered a memory prefetch
-            // therefore reading the value at `mid` should be faster
-            BinarySearch::Explore { slice, size, value, base, half, mid } => {
-
-                let cmp = unsafe { slice.get_unchecked(mid).cmp(&value) };
-                let base = if cmp == Greater { base } else { mid };
-                let size = size - half;
-
-                if size > 1 {
-                    let half = size / 2;
-                    let mid = base + half;
-
-                    // mid is always in [0, size), that means mid is >= 0 and < size.
-                    // mid >= 0: by definition
-                    // mid < size: mid = size / 2 + size / 4 + size / 8 ...
-                    unsafe { _mm_prefetch(mid as _, _MM_HINT_NTA) }
-
-                    *self = BinarySearch::Explore { slice, size, value, base, half, mid };
-                    GeneratorState::Yielded(())
-                } else {
-
-                    *self = BinarySearch::Final { slice, value, base };
-                    GeneratorState::Yielded(())
-                }
-            }
-
-            // This state is always called after a prefetch, this is the final state.
-            // It indicates that we are in a slice that contains only one value.
-            BinarySearch::Final { slice, value, base } => {
-
-                // base is always in [0, size) because base <= mid.
-                let cmp = unsafe { slice.get_unchecked(base).cmp(&value) };
-                let result = if cmp == Equal { Ok(base) } else { Err(base + (cmp == Less) as usize) };
-
-                *self = BinarySearch::Done;
-                GeneratorState::Complete(result)
-            }
-
-            BinarySearch::Done => {
-                panic!("generator resumed after completion")
-            }
+    fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
+        if self.fetched {
+            Poll::Ready(*self.reference)
+        } else {
+            let pointer: *const _ = &*self.reference;
+            unsafe { _mm_prefetch(pointer as _, _MM_HINT_NTA) };
+            unsafe { *self.map_unchecked_mut(|this| &mut this.fetched) = true };
+            ctx.waker().wake_by_ref();
+            Poll::Pending
         }
     }
 }
 
-// _MM_HINT_NTA
-fn main() {
-    let slice: Vec<_> = (0..10_000_000).collect();
-    let value = 10_000;
+async fn binary_search(s: &[i32], value: i32) -> Result<usize, usize> {
+    let mut size = s.len();
+    if size == 0 {
+        return Err(0);
+    }
+    let mut base = 0usize;
+    while size > 1 {
+        let half = size / 2;
+        let mid = base + half;
+        // mid is always in [0, size), that means mid is >= 0 and < size.
+        // mid >= 0: by definition
+        // mid < size: mid = size / 2 + size / 4 + size / 8 ...
+        let reference = unsafe { s.get_unchecked(mid) };
+        let cmp = FuturePrefetch::new(reference).await.cmp(&value);
+        base = if cmp == Greater { base } else { mid };
+        size -= half;
+    }
+    // base is always in [0, size) because base <= mid.
+    let reference = unsafe { s.get_unchecked(base) };
+    let cmp = FuturePrefetch::new(reference).await.cmp(&value);
+    if cmp == Equal { Ok(base) } else { Err(base + (cmp == Less) as usize) }
+}
 
-    let mut generator = BinarySearch::new(&slice, value);
+use std::sync::{Arc, Condvar, Mutex};
+use std::task::{RawWaker, RawWakerVTable, Waker};
+
+#[derive(Default)]
+struct Park(Mutex<bool>, Condvar);
+
+fn unpark(park: &Park) {
+    *park.0.lock().unwrap() = true;
+    park.1.notify_one();
+}
+
+static VTABLE: RawWakerVTable = RawWakerVTable::new(
+    |clone_me| unsafe {
+        let arc = Arc::from_raw(clone_me as *const Park);
+        std::mem::forget(arc.clone());
+        RawWaker::new(Arc::into_raw(arc) as *const (), &VTABLE)
+    },
+    |wake_me| unsafe { unpark(&Arc::from_raw(wake_me as *const Park)) },
+    |wake_by_ref_me| unsafe { unpark(&*(wake_by_ref_me as *const Park)) },
+    |drop_me| unsafe { drop(Arc::from_raw(drop_me as *const Park)) },
+);
+
+fn run_future<F: Future>(mut fut: F) -> F::Output {
+    let mut fut = unsafe { Pin::new_unchecked(&mut fut) };
+    let park = Arc::new(Park::default());
+    let sender = Arc::into_raw(park.clone());
+    let raw_waker = RawWaker::new(sender as *const _, &VTABLE);
+    let waker = unsafe { Waker::from_raw(raw_waker) };
+    let mut ctx = Context::from_waker(&waker);
 
     loop {
-        match Pin::new(&mut generator).resume() {
-            GeneratorState::Yielded(_) => println!("yield"),
-            GeneratorState::Complete(result) => {
-                println!("complete {:?}", result);
-                break;
+        match fut.as_mut().poll(&mut ctx) {
+            Poll::Pending => {
+                let mut runnable = park.0.lock().unwrap();
+                while !*runnable {
+                    runnable = park.1.wait(runnable).unwrap();
+                }
+                *runnable = false;
             },
+            Poll::Ready(value) => return value,
         }
     }
+}
+
+fn main() {
+    let slice: Vec<_> = (0..10_000_000).collect();
+    let value = std::env::args().nth(1).and_then(|s| i32::from_str(&s).ok()).unwrap_or(10_000);
+
+    let res = run_future(binary_search(&slice, value));
+    println!("{:?}", res);
 }
 
 #[cfg(test)]
 mod tests {
     extern crate test;
+
+    use rand::{rngs::StdRng, SeedableRng, Rng};
     use super::*;
 
     quickcheck! {
@@ -148,23 +128,75 @@ mod tests {
             xs.dedup();
 
             let a = xs.binary_search(&x);
-
-            let mut generator = BinarySearch::new(&xs, x);
-            let b = loop {
-                match Pin::new(&mut generator).resume() {
-                    GeneratorState::Yielded(_) => (),
-                    GeneratorState::Complete(result) => break result,
-                }
-            };
+            let b = run_future(binary_search(&xs, x));
 
             a == b
         }
     }
 
+    fn gen_values(rng: &mut impl Rng, size: usize) -> Vec<i32> {
+        let mut vec = vec![0i32; size]; // 256MB
+
+        rng.fill(vec.as_mut_slice());
+        vec.sort_unstable();
+        vec.dedup();
+
+        vec
+    }
+
     #[bench]
-    fn name(b: &mut test::Bencher) {
+    fn basic_one_256mb(b: &mut test::Bencher) {
+        let mut rng = StdRng::seed_from_u64(42);
+
+        let value = rng.gen();
+        let vec = gen_values(&mut rng, 256*1024*1024); // 256MB
+
         b.iter(|| {
-            // ...
+            let res = vec.binary_search(&value);
+            test::black_box(res)
+        })
+    }
+
+    #[bench]
+    fn async_one_256mb(b: &mut test::Bencher) {
+        let mut rng = StdRng::seed_from_u64(42);
+
+        let value = rng.gen();
+        let vec = gen_values(&mut rng, 256*1024*1024); // 256MB
+
+        b.iter(|| {
+            let res = run_future(binary_search(&vec, value));
+            test::black_box(res)
+        })
+    }
+
+    #[bench]
+    fn basic_multi_256mb(b: &mut test::Bencher) {
+        let mut rng = StdRng::seed_from_u64(42);
+
+        let values = gen_values(&mut rng, 16);
+        let vec = gen_values(&mut rng, 256*1024*1024); // 256MB
+
+        b.iter(|| {
+            for value in &values {
+                let res = vec.binary_search(&value);
+                let _ = test::black_box(res);
+            }
+        })
+    }
+
+    #[bench]
+    fn async_multi_256mb(b: &mut test::Bencher) {
+        let mut rng = StdRng::seed_from_u64(42);
+
+        let values = gen_values(&mut rng, 16);
+        let vec = gen_values(&mut rng, 256*1024*1024); // 256MB
+
+        b.iter(|| {
+            for value in &values {
+                let res = run_future(binary_search(&vec, *value));
+                let _ = test::black_box(res);
+            }
         })
     }
 }
