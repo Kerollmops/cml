@@ -1,5 +1,7 @@
 # cml
-Coroutines memory lookups - Permit multi memory lookups inside coroutines
+Coroutines memory lookups - Permit multi memory lookups inside coroutines.
+
+[![CppCon 2018: G. Nishanov "Nano-coroutines to the Rescue! (Using Coroutines TS, of Course)"](https://img.youtube.com/vi/j9tlJAqMV7U/0.jpg)](https://www.youtube.com/watch?v=j9tlJAqMV7U)
 
 ```
 test tests::basic_300_256mb ... bench:      84,853 ns/iter (+/- 18,628)
