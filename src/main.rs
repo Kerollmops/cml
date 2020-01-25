@@ -1,13 +1,36 @@
 #![feature(test, generators, generator_trait)]
 
+#![cfg_attr(all(not(target_arch = "x86"), not(target_arch = "x86_64")), feature(core_intrinsics))]
+
 #[cfg(test)]
 #[macro_use] extern crate quickcheck;
 
 use std::ops::{Generator, GeneratorState};
 use std::str::FromStr;
 use std::cmp::Ordering::{Less, Equal, Greater};
-use std::arch::x86_64::{_mm_prefetch, _MM_HINT_NTA};
 use std::pin::Pin;
+
+#[cfg(target_arch = "x86_64")]
+fn prefetch<T>(reference: &T) {
+    use std::arch::x86_64::{_mm_prefetch, _MM_HINT_NTA};
+    let pointer: *const _ = &*reference;
+    unsafe { _mm_prefetch(pointer as _, _MM_HINT_NTA) }
+}
+
+#[cfg(target_arch = "x86")]
+fn prefetch<T>(reference: &T) {
+    use std::arch::x86::{_mm_prefetch, _MM_HINT_NTA};
+    let pointer: *const _ = &*reference;
+    unsafe { _mm_prefetch(pointer as _, _MM_HINT_NTA) }
+}
+
+#[cfg(all(not(target_arch = "x86"), not(target_arch = "x86_64")))]
+fn prefetch<T>(reference: &T) {
+    use std::intrinsics::prefetch_read_data;
+    let pointer: *const _ = &*reference;
+    let locality = 0;
+    unsafe { prefetch_read_data(pointer as _, locality) }
+}
 
 fn binary_search_gen(s: &[i32], value: i32) -> impl Generator<Yield=(), Return=Result<usize, usize>> + '_ {
     move || {
@@ -23,16 +46,14 @@ fn binary_search_gen(s: &[i32], value: i32) -> impl Generator<Yield=(), Return=R
             // mid >= 0: by definition
             // mid < size: mid = size / 2 + size / 4 + size / 8 ...
             let reference = unsafe { s.get_unchecked(mid) };
-            let pointer: *const _ = &*reference;
-            yield unsafe { _mm_prefetch(pointer as _, _MM_HINT_NTA) };
+            yield prefetch(reference);
             let cmp = (*reference).cmp(&value);
             base = if cmp == Greater { base } else { mid };
             size -= half;
         }
         // base is always in [0, size) because base <= mid.
         let reference = unsafe { s.get_unchecked(base) };
-        let pointer: *const _ = &*reference;
-        yield unsafe { _mm_prefetch(pointer as _, _MM_HINT_NTA) };
+        yield prefetch(reference);
         let cmp = (*reference).cmp(&value);
         if cmp == Equal { Ok(base) } else { Err(base + (cmp == Less) as usize) }
     }
