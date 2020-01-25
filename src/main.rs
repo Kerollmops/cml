@@ -127,10 +127,10 @@ mod tests {
     }
 
     #[bench]
-    fn basic_300_256mb(b: &mut test::Bencher) {
+    fn basic_100_256mb(b: &mut test::Bencher) {
         let mut rng = StdRng::seed_from_u64(42);
 
-        let values = gen_values(&mut rng, 300);
+        let values = gen_values(&mut rng, 100);
         let vec = gen_values(&mut rng, 256*1024*1024); // 256MB
 
         b.iter(|| {
@@ -142,10 +142,10 @@ mod tests {
     }
 
     #[bench]
-    fn gen_300_256mb(b: &mut test::Bencher) {
+    fn gen_100_256mb(b: &mut test::Bencher) {
         let mut rng = StdRng::seed_from_u64(42);
 
-        let values = gen_values(&mut rng, 300);
+        let values = gen_values(&mut rng, 100);
         let vec = gen_values(&mut rng, 256*1024*1024); // 256MB
 
         b.iter(|| {
@@ -153,13 +153,18 @@ mod tests {
 
             while !bss.is_empty() {
                 for i in 0..bss.len() {
-                    let mut bs = match bss.get_mut(i) {
-                        Some(bs) => bs,
-                        None => break,
-                    };
+                    loop {
+                        let mut bs = match bss.get_mut(i) {
+                            Some(bs) => bs,
+                            None => break,
+                        };
 
-                    if let GeneratorState::Complete(result) = Pin::new(&mut bs).resume() {
-                        bss.swap_remove(i);
+                        match Pin::new(&mut bs).resume() {
+                            GeneratorState::Yielded(_) => break,
+                            GeneratorState::Complete(_) => {
+                                bss.swap_remove(i);
+                            },
+                        }
                     }
                 }
             }
