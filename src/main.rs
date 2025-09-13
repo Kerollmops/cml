@@ -1,6 +1,6 @@
 #![feature(coroutines, coroutine_trait)]
 
-use coroutines_mem_lookups::binary_search_gen;
+use coroutines_mem_lookups::binary_search_cor;
 
 use std::ops::{Coroutine, CoroutineState};
 use std::pin::Pin;
@@ -12,8 +12,8 @@ fn main() {
         .and_then(|s| s.parse::<i32>().ok())
         .unwrap_or(10_000);
 
-    let bsa = binary_search_gen(vec.as_slice(), value);
-    let bsb = binary_search_gen(vec.as_slice(), value);
+    let bsa = binary_search_cor(vec.as_slice(), value);
+    let bsb = binary_search_cor(vec.as_slice(), value);
     let bss = vec![bsa, bsb];
 
     for mut bs in bss {

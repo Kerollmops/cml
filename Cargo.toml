@@ -4,10 +4,19 @@ version = "0.1.0"
 authors = ["Clément Renault <renault.cle@gmail.com>"]
 edition = "2018"
 
+[dependencies]
+memmap2 = "0.9.8"
+
 [dev-dependencies]
+bytemuck = "1.23.2"
 divan = "0.1.21"
 rand = "0.7.3"
+tempfile = "3.22.0"
 
 [[bench]]
 name = "in_memory"
+harness = false
+
+[[bench]]
+name = "on_disk"
 harness = false

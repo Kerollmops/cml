@@ -1,10 +1,13 @@
 #![feature(coroutines, coroutine_trait)]
 
-use coroutines_mem_lookups::binary_search_cor;
+use bytemuck::checked::cast_slice;
+use coroutines_mem_lookups::{binary_search_yield_offsets_cor, load_pages_at_offsets};
 
 use divan::Bencher;
+use memmap2::Mmap;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 
+use std::io::{self, Write};
 use std::ops::{Coroutine, CoroutineState};
 use std::pin::Pin;
 
@@ -25,12 +28,13 @@ const SIZES: [usize; 5] = [
 #[divan::bench(consts = SIZES, args = [1, 100, 500, 1000, 10_000])]
 fn basic<const SIZE: usize>(bencher: Bencher, lookups: usize) {
     let mut rng = StdRng::seed_from_u64(SEED);
-    let (vec, niddles) = gen_playground_and_niddles::<SIZE>(&mut rng, lookups);
+    let (playground_mmap, niddles) = gen_playground_and_niddles::<SIZE>(&mut rng, lookups).unwrap();
+    let playground = cast_slice(&playground_mmap[..]);
 
     bencher.bench(|| {
         for niddle in &niddles {
-            let index = divan::black_box(vec.binary_search(niddle).unwrap_or_else(|e| e));
-            assert!(index <= vec.len());
+            let index = divan::black_box(playground.binary_search(niddle).unwrap_or_else(|e| e));
+            assert!(index <= playground.len());
         }
     });
 }
@@ -38,15 +42,18 @@ fn basic<const SIZE: usize>(bencher: Bencher, lookups: usize) {
 #[divan::bench(consts = SIZES, args = [1, 100, 500, 1000, 10_000])]
 fn coroutine<const SIZE: usize>(bencher: Bencher, lookups: usize) {
     let mut rng = StdRng::seed_from_u64(SEED);
-    let (vec, niddles) = gen_playground_and_niddles::<SIZE>(&mut rng, lookups);
+    let (playground_mmap, niddles) = gen_playground_and_niddles::<SIZE>(&mut rng, lookups).unwrap();
+    let playground = cast_slice(&playground_mmap[..]);
 
     bencher.bench(|| {
         let mut bss: Vec<_> = niddles
             .iter()
-            .map(|v| binary_search_cor(&vec, *v))
+            .map(|v| binary_search_yield_offsets_cor(&playground, *v))
             .collect();
+        let mut offsets_to_load = Vec::with_capacity(bss.len());
 
         while !bss.is_empty() {
+            offsets_to_load.clear();
             for i in 0..bss.len() {
                 loop {
                     let mut bs = match bss.get_mut(i) {
@@ -55,16 +62,23 @@ fn coroutine<const SIZE: usize>(bencher: Bencher, lookups: usize) {
                     };
 
                     match Pin::new(&mut bs).resume(()) {
-                        CoroutineState::Yielded(_) => break,
+                        CoroutineState::Yielded(i32_offset) => {
+                            // convert offset
+                            offsets_to_load.push(i32_offset * size_of::<i32>());
+                            break;
+                        }
                         CoroutineState::Complete(res) => {
                             let index = divan::black_box(res.unwrap_or_else(|e| e));
-                            assert!(index <= vec.len());
+                            assert!(index <= playground.len());
                             let done = bss.swap_remove(i);
                             drop(done);
                         }
                     }
                 }
             }
+
+            // Once we fetched all the offsets to load, load them
+            load_pages_at_offsets(&playground_mmap, &offsets_to_load).unwrap();
         }
     });
 }
@@ -72,12 +86,13 @@ fn coroutine<const SIZE: usize>(bencher: Bencher, lookups: usize) {
 fn gen_playground_and_niddles<const SIZE: usize>(
     rng: &mut impl Rng,
     lookups: usize,
-) -> (Vec<i32>, Vec<i32>) {
-    let playground = gen_playground(rng, SIZE);
+) -> io::Result<(Mmap, Vec<i32>)> {
+    let playground_mmap = gen_playground(rng, SIZE)?;
+    let playground = cast_slice(&playground_mmap[..]);
     let min = playground.iter().next().unwrap();
     let max = playground.iter().last().unwrap();
     let niddles = gen_niddles(min, max, lookups);
-    (playground, niddles)
+    Ok((playground_mmap, niddles))
 }
 
 fn gen_niddles(min: &i32, max: &i32, lookups: usize) -> Vec<i32> {
@@ -89,7 +104,7 @@ fn gen_niddles(min: &i32, max: &i32, lookups: usize) -> Vec<i32> {
     niddles
 }
 
-fn gen_playground(rng: &mut impl Rng, size: usize) -> Vec<i32> {
+fn gen_playground(rng: &mut impl Rng, size: usize) -> io::Result<Mmap> {
     let mut vec = vec![0i32; size / size_of::<i32>()];
 
     let mut prev = i32::MIN;
@@ -98,5 +113,9 @@ fn gen_playground(rng: &mut impl Rng, size: usize) -> Vec<i32> {
         prev = *v;
     }
 
-    vec
+    let mut file = tempfile::tempfile()?;
+    let bytes = bytemuck::cast_slice(&vec);
+    file.write_all(bytes)?;
+
+    unsafe { Mmap::map(&file) }
 }
