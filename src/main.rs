@@ -1,38 +1,29 @@
-#![feature(test, generators, generator_trait)]
-
-#![cfg_attr(all(not(target_arch = "x86"), not(target_arch = "x86_64")), feature(core_intrinsics))]
+#![allow(internal_features)]
+#![feature(test, coroutines, coroutine_trait)]
+#![cfg_attr(
+    all(not(target_arch = "x86"), not(target_arch = "x86_64")),
+    feature(core_intrinsics)
+)]
 
 #[cfg(test)]
-#[macro_use] extern crate quickcheck;
+#[macro_use]
+extern crate quickcheck;
 
-use std::ops::{Generator, GeneratorState};
-use std::str::FromStr;
-use std::cmp::Ordering::{Less, Equal, Greater};
+use std::cmp::Ordering::{Equal, Greater, Less};
+use std::ops::{Coroutine, CoroutineState};
 use std::pin::Pin;
 
-#[cfg(target_arch = "x86_64")]
-fn prefetch<T>(reference: &T) {
-    use std::arch::x86_64::{_mm_prefetch, _MM_HINT_NTA};
-    let pointer: *const _ = &*reference;
-    unsafe { _mm_prefetch(pointer as _, _MM_HINT_NTA) }
-}
-
-#[cfg(target_arch = "x86")]
-fn prefetch<T>(reference: &T) {
-    use std::arch::x86::{_mm_prefetch, _MM_HINT_NTA};
-    let pointer: *const _ = &*reference;
-    unsafe { _mm_prefetch(pointer as _, _MM_HINT_NTA) }
-}
-
-#[cfg(all(not(target_arch = "x86"), not(target_arch = "x86_64")))]
 fn prefetch<T>(reference: &T) {
     use std::intrinsics::prefetch_read_data;
     let pointer: *const _ = &*reference;
-    let locality = 0;
-    unsafe { prefetch_read_data(pointer as _, locality) }
+    prefetch_read_data::<_, 0>(pointer as _);
 }
 
-fn binary_search_gen(s: &[i32], value: i32) -> impl Generator<Yield=(), Return=Result<usize, usize>> + '_ {
+fn binary_search_gen(
+    s: &[i32],
+    value: i32,
+) -> impl Coroutine<Yield = (), Return = Result<usize, usize>> + '_ {
+    #[coroutine]
     move || {
         let mut size = s.len();
         if size == 0 {
@@ -55,13 +46,20 @@ fn binary_search_gen(s: &[i32], value: i32) -> impl Generator<Yield=(), Return=R
         let reference = unsafe { s.get_unchecked(base) };
         yield prefetch(reference);
         let cmp = (*reference).cmp(&value);
-        if cmp == Equal { Ok(base) } else { Err(base + (cmp == Less) as usize) }
+        if cmp == Equal {
+            Ok(base)
+        } else {
+            Err(base + (cmp == Less) as usize)
+        }
     }
 }
 
 fn main() {
     let vec: Vec<_> = (0..10_000_000).collect();
-    let value = std::env::args().nth(1).and_then(|s| i32::from_str(&s).ok()).unwrap_or(10_000);
+    let value = std::env::args()
+        .nth(1)
+        .and_then(|s| i32::from_str(&s).ok())
+        .unwrap_or(10_000);
 
     let bsa = binary_search_gen(vec.as_slice(), value);
     let bsb = binary_search_gen(vec.as_slice(), value);
@@ -69,9 +67,9 @@ fn main() {
 
     for mut bs in bss {
         let res = loop {
-            match Pin::new(&mut bs).resume() {
-                GeneratorState::Yielded(_) => (),
-                GeneratorState::Complete(result) => break result,
+            match Pin::new(&mut bs).resume(()) {
+                CoroutineState::Yielded(_) => (),
+                CoroutineState::Complete(result) => break result,
             }
         };
         println!("{:?}", res);
@@ -84,6 +82,7 @@ mod tests {
 
     use rand::{rngs::StdRng, SeedableRng, Rng};
     use super::*;
+    use rand::{rngs::StdRng, Rng, SeedableRng};
 
     quickcheck! {
         fn qc_easy(xs: Vec<i32>, x: i32) -> bool {
@@ -95,9 +94,9 @@ mod tests {
             let a = xs.binary_search(&x);
             let mut bs = binary_search_gen(&xs, x);
             let b = loop {
-                match Pin::new(&mut bs).resume() {
-                    GeneratorState::Yielded(_) => (),
-                    GeneratorState::Complete(result) => break result,
+                match Pin::new(&mut bs).resume(()) {
+                    CoroutineState::Yielded(_) => (),
+                    CoroutineState::Complete(result) => break result,
                 }
             };
 
@@ -138,9 +137,9 @@ mod tests {
         b.iter(|| {
             let mut bs = binary_search_gen(&vec, value);
             let res = loop {
-                match Pin::new(&mut bs).resume() {
-                    GeneratorState::Yielded(_) => (),
-                    GeneratorState::Complete(result) => break result,
+                match Pin::new(&mut bs).resume(()) {
+                    CoroutineState::Yielded(_) => (),
+                    CoroutineState::Complete(result) => break result,
                 }
             };
             test::black_box(res)
@@ -180,11 +179,13 @@ mod tests {
                             None => break,
                         };
 
-                        match Pin::new(&mut bs).resume() {
-                            GeneratorState::Yielded(_) => break,
-                            GeneratorState::Complete(_) => {
-                                bss.swap_remove(i);
-                            },
+                        match Pin::new(&mut bs).resume(()) {
+                            CoroutineState::Yielded(_) => break,
+                            CoroutineState::Complete(res) => {
+                                let _ = test::black_box(res);
+                                let done = bss.swap_remove(i);
+                                drop(done);
+                            }
                         }
                     }
                 }
