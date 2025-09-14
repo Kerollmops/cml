@@ -8,7 +8,7 @@ use memmap2::Mmap;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use std::fs::File;
-use std::io;
+use std::io::{self, Write as _};
 use std::ops::{Coroutine, CoroutineState};
 use std::pin::Pin;
 
@@ -110,17 +110,27 @@ fn gen_niddles(min: &i64, max: &i64, lookups: usize) -> Vec<i64> {
     niddles
 }
 
-fn gen_playground(rng: &mut impl Rng, size: usize) -> io::Result<(File, Mmap)> {
-    let file = tempfile::tempfile()?;
-    file.set_len((size * size_of::<i64>()) as u64)?;
-    let mut mmap = unsafe { memmap2::MmapMut::map_mut(&file) }?;
-    let slice = bytemuck::cast_slice_mut(&mut mmap);
+fn gen_playground(rng: &mut impl Rng, mut size: usize) -> io::Result<(File, Mmap)> {
+    const BLOCK_SIZE: usize = 4 * 1024 * 1024; // 4GiB
 
+    let mut file = tempfile::tempfile()?;
+    file.set_len((size * size_of::<i64>()) as u64)?;
+
+    let mut vec = vec![0; BLOCK_SIZE];
     let mut prev = i64::MIN;
-    for v in slice {
-        *v = prev.checked_add(rng.gen_range(1, 10)).unwrap();
-        prev = *v;
+    while size > 0 {
+        let block_size = size.min(BLOCK_SIZE);
+
+        for v in &mut vec[..block_size] {
+            *v = prev.checked_add(rng.gen_range(1, 10)).unwrap();
+            prev = *v;
+        }
+
+        let bytes = bytemuck::cast_slice(&vec[..block_size]);
+        file.write_all(bytes)?;
+        size = size.checked_sub(block_size).unwrap();
     }
 
-    Ok((file, mmap.make_read_only()?))
+    let mmap = unsafe { Mmap::map(&file) }?;
+    Ok((file, mmap))
 }
