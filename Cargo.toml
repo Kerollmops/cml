@@ -2,10 +2,13 @@
 name = "coroutines-mem-lookups"
 version = "0.1.0"
 authors = ["Clément Renault <renault.cle@gmail.com>"]
-edition = "2018"
+edition = "2024"
 
 [dependencies]
 memmap2 = "0.9.8"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = "0.7.10"
 
 [dev-dependencies]
 bytemuck = "1.23.2"

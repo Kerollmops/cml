@@ -1,17 +1,12 @@
 #![allow(internal_features)]
-#![feature(coroutines, coroutine_trait)]
-#![cfg_attr(
-    all(not(target_arch = "x86"), not(target_arch = "x86_64")),
-    feature(core_intrinsics)
-)]
+#![feature(core_intrinsics, coroutines, coroutine_trait)]
 
 use std::cmp::Ordering::{Equal, Greater, Less};
-#[cfg(target_os = "macos")]
 use std::io;
 use std::ops::{Coroutine, CoroutineState};
 use std::pin::Pin;
 
-use memmap2::{Advice, Mmap};
+use memmap2::Mmap;
 
 pub fn prefetch<T>(reference: &T) {
     use std::intrinsics::prefetch_read_data;
@@ -26,8 +21,8 @@ pub fn prefetch<T>(reference: &T) {
 /// the pages corresponding to the offsets. Resuming the coroutine
 /// after the pages are known to be in CPU cache.
 pub fn binary_search_cor(
-    s: &[i32],
-    value: i32,
+    s: &[i64],
+    value: i64,
 ) -> impl Coroutine<Yield = (), Return = Result<usize, usize>> + '_ {
     let mut inner = binary_search_yield_offsets_cor(s, value);
     #[coroutine]
@@ -43,12 +38,44 @@ pub fn binary_search_cor(
 ///
 /// Note that this function takes offsets in bytes. Offsets must be
 /// converted accordingly. It also asks the kernel to load only 4 bytes
-/// (size of i32).
+/// (size of i64).
+#[cfg(not(target_os = "linux"))]
 pub fn load_pages_at_offsets(mmap: &Mmap, offsets: &[usize]) -> io::Result<()> {
+    use memmap2::Advice;
     offsets
         .iter()
         .copied()
-        .try_for_each(|offset| mmap.advise_range(Advice::WillNeed, offset, size_of::<i32>()))
+        .try_for_each(|offset| mmap.advise_range(Advice::WillNeed, offset, size_of::<i64>()))
+}
+
+#[cfg(target_os = "linux")]
+pub fn load_pages_at_offsets(mmap: &Mmap, offsets: &[usize]) -> io::Result<()> {
+    use io_uring::{IoUring, opcode};
+
+    /// The posix madvise for willneed.
+    /// <https://docs.rs/nix/latest/nix/sys/mman/enum.MmapAdvise.html>
+    const MADV_WILLNEED: i32 = 3;
+
+    let entries = offsets.len().next_power_of_two().try_into().unwrap();
+    let mut ring = IoUring::new(entries)?;
+
+    for &offset in offsets {
+        let entry = opcode::Madvise::new(
+            unsafe { mmap.as_ptr().offset(offset as isize) as *const _ },
+            size_of::<i64>() as i64,
+            MADV_WILLNEED,
+        )
+        .build();
+        unsafe {
+            ring.submission()
+                .push(&entry)
+                .expect("submission queue is full");
+        }
+    }
+
+    ring.submit_and_wait(offsets.len())?;
+
+    Ok(())
 }
 
 /// A coroutine version of a binary_search algorithm that yields offsets
@@ -58,8 +85,8 @@ pub fn load_pages_at_offsets(mmap: &Mmap, offsets: &[usize]) -> io::Result<()> {
 /// corresponding to the offsets. Resuming the coroutine after the pages are
 /// known to be in page/CPU cache.
 pub fn binary_search_yield_offsets_cor(
-    s: &[i32],
-    value: i32,
+    s: &[i64],
+    value: i64,
 ) -> impl Coroutine<Yield = usize, Return = Result<usize, usize>> + '_ {
     #[coroutine]
     move || {

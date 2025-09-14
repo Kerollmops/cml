@@ -3,7 +3,7 @@
 use coroutines_mem_lookups::binary_search_cor;
 
 use divan::Bencher;
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use std::ops::{Coroutine, CoroutineState};
 use std::pin::Pin;
@@ -14,12 +14,12 @@ fn main() {
     divan::main();
 }
 
-const SIZES: [usize; 5] = [
-    256 * 1024 * 1024,       // 256MiB
-    1024 * 1024 * 1024,      // 1GiB
-    2 * 1024 * 1024 * 1024,  // 2GiB
-    8 * 1024 * 1024 * 1024,  // 8GiB
-    20 * 1024 * 1024 * 1024, // 20GiB
+const SIZES: [usize; 4] = [
+    256 * 1024 * 1024,      // 256MiB
+    1024 * 1024 * 1024,     // 1GiB
+    2 * 1024 * 1024 * 1024, // 2GiB
+    8 * 1024 * 1024 * 1024, // 8GiB
+                            // 20 * 1024 * 1024 * 1024, // 20GiB
 ];
 
 #[divan::bench(consts = SIZES, args = [1, 100, 500, 1000, 10_000])]
@@ -72,7 +72,7 @@ fn coroutine<const SIZE: usize>(bencher: Bencher, lookups: usize) {
 fn gen_playground_and_niddles<const SIZE: usize>(
     rng: &mut impl Rng,
     lookups: usize,
-) -> (Vec<i32>, Vec<i32>) {
+) -> (Vec<i64>, Vec<i64>) {
     let playground = gen_playground(rng, SIZE);
     let min = playground.iter().next().unwrap();
     let max = playground.iter().last().unwrap();
@@ -80,7 +80,7 @@ fn gen_playground_and_niddles<const SIZE: usize>(
     (playground, niddles)
 }
 
-fn gen_niddles(min: &i32, max: &i32, lookups: usize) -> Vec<i32> {
+fn gen_niddles(min: &i64, max: &i64, lookups: usize) -> Vec<i64> {
     let mut rng = StdRng::seed_from_u64(42);
     let mut niddles = Vec::with_capacity(lookups as usize);
     for _ in 0..lookups {
@@ -89,10 +89,10 @@ fn gen_niddles(min: &i32, max: &i32, lookups: usize) -> Vec<i32> {
     niddles
 }
 
-fn gen_playground(rng: &mut impl Rng, size: usize) -> Vec<i32> {
-    let mut vec = vec![0i32; size / size_of::<i32>()];
+fn gen_playground(rng: &mut impl Rng, size: usize) -> Vec<i64> {
+    let mut vec = vec![0i64; size / size_of::<i64>()];
 
-    let mut prev = i32::MIN;
+    let mut prev = i64::MIN;
     for v in &mut vec {
         *v = prev.checked_add(rng.gen_range(1, 10)).unwrap();
         prev = *v;

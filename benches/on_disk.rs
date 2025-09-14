@@ -5,9 +5,9 @@ use coroutines_mem_lookups::{binary_search_yield_offsets_cor, load_pages_at_offs
 
 use divan::Bencher;
 use memmap2::Mmap;
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
-use std::io::{self, Write};
+use std::io;
 use std::ops::{Coroutine, CoroutineState};
 use std::pin::Pin;
 
@@ -86,7 +86,7 @@ fn coroutine<const SIZE: usize>(bencher: Bencher, lookups: usize) {
 fn gen_playground_and_niddles<const SIZE: usize>(
     rng: &mut impl Rng,
     lookups: usize,
-) -> io::Result<(Mmap, Vec<i32>)> {
+) -> io::Result<(Mmap, Vec<i64>)> {
     let playground_mmap = gen_playground(rng, SIZE)?;
     let playground = cast_slice(&playground_mmap[..]);
     let min = playground.iter().next().unwrap();
@@ -95,7 +95,7 @@ fn gen_playground_and_niddles<const SIZE: usize>(
     Ok((playground_mmap, niddles))
 }
 
-fn gen_niddles(min: &i32, max: &i32, lookups: usize) -> Vec<i32> {
+fn gen_niddles(min: &i64, max: &i64, lookups: usize) -> Vec<i64> {
     let mut rng = StdRng::seed_from_u64(42);
     let mut niddles = Vec::with_capacity(lookups as usize);
     for _ in 0..lookups {
@@ -105,17 +105,16 @@ fn gen_niddles(min: &i32, max: &i32, lookups: usize) -> Vec<i32> {
 }
 
 fn gen_playground(rng: &mut impl Rng, size: usize) -> io::Result<Mmap> {
-    let mut vec = vec![0i32; size / size_of::<i32>()];
+    let file = tempfile::tempfile()?;
+    file.set_len((size * size_of::<i64>()) as u64)?;
+    let mut mmap = unsafe { memmap2::MmapMut::map_mut(&file) }?;
+    let slice = bytemuck::cast_slice_mut(&mut mmap);
 
-    let mut prev = i32::MIN;
-    for v in &mut vec {
+    let mut prev = i64::MIN;
+    for v in slice {
         *v = prev.checked_add(rng.gen_range(1, 10)).unwrap();
         prev = *v;
     }
 
-    let mut file = tempfile::tempfile()?;
-    let bytes = bytemuck::cast_slice(&vec);
-    file.write_all(bytes)?;
-
-    unsafe { Mmap::map(&file) }
+    Ok(mmap.make_read_only()?)
 }
