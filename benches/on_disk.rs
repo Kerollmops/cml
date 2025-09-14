@@ -7,7 +7,6 @@ use divan::Bencher;
 use memmap2::Mmap;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
-use std::fs::File;
 use std::io::{self, Write as _};
 use std::ops::{Coroutine, CoroutineState};
 use std::pin::Pin;
@@ -29,8 +28,7 @@ const SIZES: [usize; 5] = [
 #[divan::bench(consts = SIZES, args = [1, 100, 500, 1000, 10_000])]
 fn basic<const SIZE: usize>(bencher: Bencher, lookups: usize) {
     let mut rng = StdRng::seed_from_u64(SEED);
-    let (_playground_file, playground_mmap, niddles) =
-        gen_playground_and_niddles::<SIZE>(&mut rng, lookups).unwrap();
+    let (playground_mmap, niddles) = gen_playground_and_niddles::<SIZE>(&mut rng, lookups).unwrap();
     let playground = cast_slice(&playground_mmap[..]);
 
     bencher.bench(|| {
@@ -44,8 +42,7 @@ fn basic<const SIZE: usize>(bencher: Bencher, lookups: usize) {
 #[divan::bench(consts = SIZES, args = [1, 100, 500, 1000, 10_000])]
 fn coroutine<const SIZE: usize>(bencher: Bencher, lookups: usize) {
     let mut rng = StdRng::seed_from_u64(SEED);
-    let (playground_file, playground_mmap, niddles) =
-        gen_playground_and_niddles::<SIZE>(&mut rng, lookups).unwrap();
+    let (playground_mmap, niddles) = gen_playground_and_niddles::<SIZE>(&mut rng, lookups).unwrap();
     let playground = cast_slice(&playground_mmap[..]);
 
     bencher.bench(|| {
@@ -81,10 +78,7 @@ fn coroutine<const SIZE: usize>(bencher: Bencher, lookups: usize) {
             }
 
             // Once we fetched all the offsets to load, load them
-            #[cfg(not(target_os = "linux"))]
             load_pages_at_offsets(&playground_mmap, &offsets_to_load).unwrap();
-            #[cfg(target_os = "linux")]
-            load_pages_at_offsets(&playground_file, &offsets_to_load).unwrap();
         }
     });
 }
@@ -92,13 +86,13 @@ fn coroutine<const SIZE: usize>(bencher: Bencher, lookups: usize) {
 fn gen_playground_and_niddles<const SIZE: usize>(
     rng: &mut impl Rng,
     lookups: usize,
-) -> io::Result<(File, Mmap, Vec<i64>)> {
-    let (file, playground_mmap) = gen_playground(rng, SIZE)?;
+) -> io::Result<(Mmap, Vec<i64>)> {
+    let playground_mmap = gen_playground(rng, SIZE)?;
     let playground = cast_slice(&playground_mmap[..]);
     let min = playground.iter().next().unwrap();
     let max = playground.iter().last().unwrap();
     let niddles = gen_niddles(min, max, lookups);
-    Ok((file, playground_mmap, niddles))
+    Ok((playground_mmap, niddles))
 }
 
 fn gen_niddles(min: &i64, max: &i64, lookups: usize) -> Vec<i64> {
@@ -110,7 +104,7 @@ fn gen_niddles(min: &i64, max: &i64, lookups: usize) -> Vec<i64> {
     niddles
 }
 
-fn gen_playground(rng: &mut impl Rng, mut size: usize) -> io::Result<(File, Mmap)> {
+fn gen_playground(rng: &mut impl Rng, mut size: usize) -> io::Result<Mmap> {
     const BLOCK_SIZE: usize = 4 * 1024 * 1024; // 4GiB
 
     let mut file = tempfile::tempfile()?;
@@ -131,6 +125,5 @@ fn gen_playground(rng: &mut impl Rng, mut size: usize) -> io::Result<(File, Mmap
         size = size.checked_sub(block_size).unwrap();
     }
 
-    let mmap = unsafe { Mmap::map(&file) }?;
-    Ok((file, mmap))
+    unsafe { Mmap::map(&file) }
 }

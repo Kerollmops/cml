@@ -6,7 +6,6 @@ use std::io;
 use std::ops::{Coroutine, CoroutineState};
 use std::pin::Pin;
 
-#[cfg(not(target_os = "linux"))]
 use memmap2::Mmap;
 
 pub fn prefetch<T>(reference: &T) {
@@ -50,21 +49,23 @@ pub fn load_pages_at_offsets(mmap: &Mmap, offsets: &[usize]) -> io::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-pub fn load_pages_at_offsets(file: &std::fs::File, offsets: &[usize]) -> io::Result<()> {
-    use std::os::fd::AsRawFd as _;
-    use std::ptr;
+pub fn load_pages_at_offsets(mmap: &Mmap, offsets: &[usize]) -> io::Result<()> {
+    use io_uring::{IoUring, opcode};
 
-    use io_uring::{IoUring, opcode, types};
+    /// The posix madvise for willneed.
+    /// <https://docs.rs/nix/latest/nix/sys/mman/enum.MmapAdvise.html>
+    const MADV_WILLNEED: i32 = 3;
 
     let entries = offsets.len().next_power_of_two().try_into().unwrap();
     let mut ring = IoUring::new(entries)?;
 
     for &offset in offsets {
-        let fd = file.as_raw_fd();
-        // We don't care about the data, we just want to make sure it's in the page cache.
-        let entry = opcode::Read::new(types::Fd(fd), ptr::null_mut(), 0)
-            .offset(offset as u64)
-            .build();
+        let entry = opcode::Madvise::new(
+            unsafe { mmap.as_ptr().offset(offset as isize) as *const _ },
+            size_of::<i64>() as i64,
+            MADV_WILLNEED,
+        )
+        .build();
         unsafe {
             ring.submission()
                 .push(&entry)
