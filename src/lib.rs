@@ -61,7 +61,7 @@ pub fn load_pages_at_offsets(mmap: &Mmap, offsets: &[usize]) -> io::Result<()> {
 
     for &offset in offsets {
         let entry = opcode::Madvise::new(
-            unsafe { mmap.as_ptr().offset(offset as isize) as *const _ },
+            mmap[offset..].as_ptr() as *const _,
             size_of::<i64>() as i64,
             MADV_WILLNEED,
         )
