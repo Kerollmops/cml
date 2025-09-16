@@ -6,6 +6,7 @@ edition = "2024"
 
 [dependencies]
 memmap2 = "0.9.8"
+roaring = "0.11.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring = "0.7.10"

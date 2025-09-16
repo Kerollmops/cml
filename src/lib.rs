@@ -7,6 +7,8 @@ use std::ops::{Coroutine, CoroutineState};
 use std::pin::Pin;
 
 use memmap2::Mmap;
+#[cfg(target_os = "linux")]
+use roaring::RoaringTreemap;
 
 pub fn prefetch<T>(reference: &T) {
     use std::intrinsics::prefetch_read_data;
@@ -49,7 +51,7 @@ pub fn load_pages_at_offsets(mmap: &Mmap, offsets: &[usize]) -> io::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-pub fn load_pages_at_offsets(mmap: &Mmap, offsets: &[usize]) -> io::Result<()> {
+pub fn load_pages_at_offsets(mmap: &Mmap, offsets: &RoaringTreemap) -> io::Result<()> {
     use io_uring::{IoUring, opcode};
 
     /// The posix madvise for willneed.
@@ -59,9 +61,9 @@ pub fn load_pages_at_offsets(mmap: &Mmap, offsets: &[usize]) -> io::Result<()> {
     let entries = offsets.len().next_power_of_two().try_into().unwrap();
     let mut ring = IoUring::new(entries)?;
 
-    for &offset in offsets {
+    for offset in offsets {
         let entry = opcode::Madvise::new(
-            mmap[offset..].as_ptr() as *const _,
+            mmap[offset as usize..].as_ptr() as *const _,
             size_of::<i64>() as i64,
             MADV_WILLNEED,
         )
@@ -73,7 +75,7 @@ pub fn load_pages_at_offsets(mmap: &Mmap, offsets: &[usize]) -> io::Result<()> {
         }
     }
 
-    ring.submit_and_wait(offsets.len())?;
+    ring.submit_and_wait(offsets.len() as usize)?;
 
     Ok(())
 }

@@ -6,6 +6,7 @@ use coroutines_mem_lookups::{binary_search_yield_offsets_cor, load_pages_at_offs
 use divan::Bencher;
 use memmap2::Mmap;
 use rand::{Rng, SeedableRng, rngs::StdRng};
+use roaring::RoaringTreemap;
 
 use std::io::{self, Write as _};
 use std::ops::{Coroutine, CoroutineState};
@@ -50,7 +51,8 @@ fn coroutine<const SIZE: usize>(bencher: Bencher, lookups: usize) {
             .iter()
             .map(|v| binary_search_yield_offsets_cor(&playground, *v))
             .collect();
-        let mut offsets_to_load = Vec::with_capacity(bss.len());
+        let mut previously_loaded = RoaringTreemap::new();
+        let mut offsets_to_load = RoaringTreemap::new();
 
         while !bss.is_empty() {
             offsets_to_load.clear();
@@ -63,8 +65,7 @@ fn coroutine<const SIZE: usize>(bencher: Bencher, lookups: usize) {
 
                     match Pin::new(&mut bs).resume(()) {
                         CoroutineState::Yielded(i64_offset) => {
-                            // convert offset
-                            offsets_to_load.push(i64_offset * size_of::<i64>());
+                            offsets_to_load.insert((i64_offset * size_of::<i64>()) as u64);
                             break;
                         }
                         CoroutineState::Complete(res) => {
@@ -78,7 +79,11 @@ fn coroutine<const SIZE: usize>(bencher: Bencher, lookups: usize) {
             }
 
             // Once we fetched all the offsets to load, load them
-            load_pages_at_offsets(&playground_mmap, &offsets_to_load).unwrap();
+            if !offsets_to_load.is_disjoint(&previously_loaded) {
+                let diff_to_load = &offsets_to_load - &previously_loaded;
+                load_pages_at_offsets(&playground_mmap, &diff_to_load).unwrap();
+            }
+            std::mem::swap(&mut offsets_to_load, &mut previously_loaded);
         }
     });
 }
