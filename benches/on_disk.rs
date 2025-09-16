@@ -62,9 +62,9 @@ fn coroutine<const SIZE: usize>(bencher: Bencher, lookups: usize) {
                     };
 
                     match Pin::new(&mut bs).resume(()) {
-                        CoroutineState::Yielded(i32_offset) => {
+                        CoroutineState::Yielded(i64_offset) => {
                             // convert offset
-                            offsets_to_load.push(i32_offset * size_of::<i32>());
+                            offsets_to_load.push(i64_offset * size_of::<i64>());
                             break;
                         }
                         CoroutineState::Complete(res) => {
